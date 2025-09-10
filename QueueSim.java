@@ -33,6 +33,35 @@ public class QueueSim {
         @Override public int compareTo(Event o) { return Double.compare(this.time, o.time); }
     }
 
+    static class Fila {
+        final int servers, capacity;
+        final double minArrival, maxArrival;
+        final double minService, maxService;
+
+        int customers=0;
+        int busy=0;
+        int loss=0;
+
+        double[] stateTime;
+        Queue<Double> arrivalTimes = new ArrayDeque<>();
+        double totalResponse=0;
+        long completed=0;
+
+        public Fila(int servers,int capacity,double minArrival,double maxArrival,double minService,double maxService){
+            this.servers=servers; this.capacity=capacity;
+            this.minArrival=minArrival; this.maxArrival=maxArrival;
+            this.minService=minService; this.maxService=maxService;
+            stateTime = new double[capacity+1];
+        }
+
+        int status(){ return customers; }
+        int capacity(){ return capacity; }
+        int servers(){ return servers; }
+        void in(){ customers++; }
+        void out(){ customers--; }
+        void loss(){ loss++; }
+    }
+
     public static class Simulator {
         private final LCG rng;
         private long budget;
