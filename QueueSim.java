@@ -3,8 +3,6 @@ import java.util.Locale;
 import java.util.PriorityQueue;
 import java.util.Queue;
 
-import org.w3c.dom.events.Event;
-
 public class QueueSim {
 
     public static class LCG {
@@ -23,7 +21,7 @@ public class QueueSim {
         }
     }
 
-    enum EventType { CHEGADA, SAIDA }
+    enum EventType { CHEGADA, SAIDA, PASSAGEM }
 
     static class Event implements Comparable<Event> {
         final double time;
@@ -66,34 +64,17 @@ public class QueueSim {
         private final LCG rng;
         private long budget;
 
-        private final double arrivalMin, arrivalMax;
-        private final double serviceMin, serviceMax;
-        private final int servers;
-        private final int capacity;
 
         private final PriorityQueue<Event> agenda = new PriorityQueue<>();
-        private final Queue<Double> arrivalTimes = new ArrayDeque<>();
 
         private double currentTime = 0.0;
         private double lastEventTime = 0.0;
 
-        private int inSystem = 0;
-        private int busyServers = 0;
+        private final Fila fila1, fila2;
 
-        private final double[] stateTime;
-        private long completed = 0;
-        private double totalResponseTime = 0.0;
-
-        public Simulator(LCG rng, long budget,
-                         double arrivalMin, double arrivalMax,
-                         double serviceMin, double serviceMax,
-                         int servers, int capacity) {
-            this.rng = rng;
-            this.budget = budget;
-            this.arrivalMin = arrivalMin; this.arrivalMax = arrivalMax;
-            this.serviceMin = serviceMin; this.serviceMax = serviceMax;
-            this.servers = servers; this.capacity = capacity;
-            this.stateTime = new double[capacity + 1];
+        public Simulator(LCG rng,long budget,Fila fila1,Fila fila2){
+            this.rng=rng; this.budget=budget;
+            this.fila1=fila1; this.fila2=fila2;
         }
 
         private double drawU() { budget--; return rng.nextRandom(); }
@@ -102,88 +83,121 @@ public class QueueSim {
             return min + (max - min) * drawU();
         }
 
-        private void accumulate(double newTime) {
-            double dt = newTime - lastEventTime;
-            int s = Math.min(inSystem, capacity);
-            stateTime[s] += dt;
-            lastEventTime = newTime;
+        private void acumulate(double newTime){
+            double dt=newTime-lastEventTime;
+            fila1.stateTime[Math.min(fila1.status(), fila1.capacity())]+=dt;
+            fila2.stateTime[Math.min(fila2.status(), fila2.capacity())]+=dt;
+            lastEventTime=newTime;
         }
 
-        private void scheduleInitialArrival() {
-            double t = uniform(arrivalMin, arrivalMax);
-            agenda.add(new Event(currentTime + t, EventType.CHEGADA));
+        private void scheduleInitialArrival(){
+            double t=uniform(fila1.minArrival,fila1.maxArrival);
+            agenda.add(new Event(currentTime+t,EventType.CHEGADA));
         }
 
-        private void handleArrival(Event e) {
-            accumulate(e.time); currentTime = e.time;
-            if (inSystem >= capacity) {
-                // perda
-                double t = uniform(arrivalMin, arrivalMax);
-                agenda.add(new Event(currentTime + t, EventType.CHEGADA));
-                return;
+         private void handleArrival(Event e){
+            acumulate(e.time); currentTime=e.time;
+            if(fila1.status()>=fila1.capacity){
+                fila1.loss();
+            }else{
+                fila1.in();
+                fila1.arrivalTimes.add(currentTime);
+                if(fila1.busy<fila1.servers){
+                    fila1.busy++;
+                    double s=uniform(fila1.minService,fila1.maxService);
+                    agenda.add(new Event(currentTime+s,EventType.PASSAGEM));
+                }
             }
-            inSystem++;
-            arrivalTimes.add(currentTime);
-            if (busyServers < servers) {
-                busyServers++;
-                double s = uniform(serviceMin, serviceMax);
-                agenda.add(new Event(currentTime + s, EventType.SAIDA));
-            }
-            double t = uniform(arrivalMin, arrivalMax);
-            agenda.add(new Event(currentTime + t, EventType.CHEGADA));
+            double t=uniform(fila1.minArrival,fila1.maxArrival);
+            agenda.add(new Event(currentTime+t,EventType.CHEGADA));
         }
 
-        private void handleDeparture(Event e) {
-            accumulate(e.time); currentTime = e.time;
-            inSystem--;
-            Double a = arrivalTimes.poll();
-            if (a != null) totalResponseTime += (currentTime - a);
-            completed++;
+        private void handlePassagem(Event e){
+            acumulate(e.time); currentTime=e.time;
+            fila1.out();
+            Double a=fila1.arrivalTimes.poll();
+            if(a!=null) fila1.totalResponse+=(currentTime-a);
 
-            if (inSystem >= busyServers) {
-                double s = uniform(serviceMin, serviceMax);
-                agenda.add(new Event(currentTime + s, EventType.SAIDA));
-            } else {
-                busyServers--;
-            }
+            if(fila1.status()>=fila1.busy){
+                double s=uniform(fila1.minService,fila1.maxService);
+                agenda.add(new Event(currentTime+s,EventType.PASSAGEM));
+            }else fila1.busy--;
+
+            if(fila2.status()<fila2.capacity){
+                fila2.in();
+                fila2.arrivalTimes.add(currentTime);
+                if(fila2.busy<fila2.servers){
+                    fila2.busy++;
+                    double s=uniform(fila2.minService,fila2.maxService);
+                    agenda.add(new Event(currentTime+s,EventType.SAIDA));
+                }
+            }else fila2.loss();
         }
 
-        public void run() {
+        private void handleSaida(Event e){
+            acumulate(e.time); currentTime=e.time;
+            fila2.out();
+            Double a=fila2.arrivalTimes.poll();
+            if(a!=null) fila2.totalResponse+=(currentTime-a);
+            fila2.completed++;
+
+            if(fila2.status()>=fila2.busy){
+                double s=uniform(fila2.minService,fila2.maxService);
+                agenda.add(new Event(currentTime+s,EventType.SAIDA));
+            }else fila2.busy--;
+        }
+
+        public void run(){
             scheduleInitialArrival();
-            while (!agenda.isEmpty() && budget > 0) {
-                Event e = agenda.poll();
-                if (e.type == EventType.CHEGADA) handleArrival(e);
-                else handleDeparture(e);
+            while(!agenda.isEmpty() && budget>0){
+                Event ev=agenda.poll();
+                if(ev.type==EventType.CHEGADA) handleArrival(ev);
+                else if(ev.type==EventType.PASSAGEM) handlePassagem(ev);
+                else handleSaida(ev);
             }
         }
 
-        public void report() {
-            double total = lastEventTime;
-            System.out.println("Estado;Tempo;Probabilidade");
-            for (int i = 0; i <= capacity; i++) {
-                double p = total > 0 ? stateTime[i]/total : 0;
-                System.out.printf(Locale.US, "%d;%.4f;%.4f\n", i, stateTime[i], p);
+        public void report(){
+            double total=lastEventTime;
+            System.out.println("=== Resultados Fila 1 ===");
+            for(int i=0;i<fila1.stateTime.length;i++){
+                double p=total>0? fila1.stateTime[i]/total :0;
+                System.out.printf(Locale.US,"Estado %d; Tempo %.2f; Prob %.4f\n",i,fila1.stateTime[i],p);
             }
-            double avgResponse = completed > 0 ? totalResponseTime/completed : 0.0;
-            System.out.println("Clientes completos: " + completed);
-            System.out.printf(Locale.US, "Tempo médio de resposta: %.4f\n", avgResponse);
+            System.out.println("Perdas Fila1: "+fila1.loss);
+
+            System.out.println("\n=== Resultados Fila 2 ===");
+            for(int i=0;i<fila2.stateTime.length;i++){
+                double p=total>0? fila2.stateTime[i]/total :0;
+                System.out.printf(Locale.US,"Estado %d; Tempo %.2f; Prob %.4f\n",i,fila2.stateTime[i],p);
+            }
+            System.out.println("Perdas Fila2: "+fila2.loss);
+            double avgResp=fila2.completed>0? fila2.totalResponse/fila2.completed:0;
+            System.out.printf("Tempo médio resposta Fila2: %.4f\n",avgResp);
         }
 
 
-        public static void main(String[] args) {
-            long a=16807L, c=0, M=2147483647L, seed=12345L;
-            LCG rng = new LCG(a,c,M,seed);
-            long budget = 100000;
-    
-            System.out.println("=== G/G/1/5 (Uniforme 2-5, 3-5) ===");
-            Simulator sim1 = new Simulator(rng, budget, 2,5,3,5, 1,5);
-            sim1.run(); sim1.report();
-    
-            System.out.println("\n=== G/G/2/5 (Uniforme 2-5, 3-5) ===");
-            LCG rng2 = new LCG(a,c,M,seed);
-            Simulator sim2 = new Simulator(rng2, budget, 2,5,3,5, 2,5);
-            sim2.run(); sim2.report();
-        }
+       public static void main(String[] args) {
+        long a = 16807L, c = 0, M = 2147483647L, seed = 12345L;
+        long budget = 100000;
+
+        // === Caso 1: G/G/2/3 (Uniforme 1–4 chegada, 3–4 serviço) ===
+        Fila fila1_case1 = new Fila(2, 3, 1, 4, 3, 4); 
+        Fila fila2_case1 = new Fila(2, 3, 0, 0, 3, 4); 
+        Simulator sim3 = new Simulator(new LCG(a,c,M,seed), budget, fila1_case1, fila2_case1);
+        System.out.println("\n=== Tandem G/G/2/3 (1-4 chegada, 3-4 serviço) ===");
+        sim3.run(); 
+        sim3.report();
+
+        // === Caso 2: G/G/1/5 (sem chegadas, serviço 2–3) ===
+        Fila fila1_case2 = new Fila(1, 5, 2, 5, 2, 3); 
+        Fila fila2_case2 = new Fila(1, 5, 0, 0, 2, 3); 
+        Simulator sim4 = new Simulator(new LCG(a,c,M,seed), budget, fila1_case2, fila2_case2);
+        System.out.println("\n=== Tandem G/G/1/5 (2-5 chegada, 2-3 serviço) ===");
+        sim4.run(); 
+        sim4.report();
+}
+
     
     }
 }
